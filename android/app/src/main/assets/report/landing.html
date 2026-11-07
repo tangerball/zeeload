@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>下载诊断报告 · ZEEload</title>
+<style>
+  :root { color-scheme: dark; --bg:#0b0f14; --card:#151b23; --line:#232c38; --txt:#e8eef6; --dim:#93a1b3; --ok:#2ea043; --warn:#d29922; --bad:#f85149; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin:0; background:radial-gradient(1200px 600px at 50% -10%, #16202b 0%, var(--bg) 60%);
+         color:var(--txt); font:16px/1.55 -apple-system, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+         padding:22px 16px 40px; min-height:100vh; }
+  h1 { font-size:22px; margin:6px 0 4px; letter-spacing:.5px; }
+  .sub { color:var(--dim); font-size:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; margin-top:16px; }
+  .kv { display:flex; justify-content:space-between; gap:12px; padding:6px 0; font-size:14px; border-bottom:1px dashed rgba(255,255,255,.06); }
+  .kv:last-child { border-bottom:0; }
+  .kv b { font-weight:600; }
+  .kv span { color:var(--dim); }
+  button { width:100%; margin-top:16px; padding:16px; font-size:17px; font-weight:600; border:0; border-radius:14px;
+           background:var(--ok); color:#fff; }
+  button:disabled { background:#2b3442; color:#8494a8; }
+  button.ghost { background:#1d2530; border:1px solid var(--line); color:var(--txt); font-weight:500; padding:13px; }
+  .bar { height:10px; background:#0e141b; border:1px solid var(--line); border-radius:999px; overflow:hidden; margin-top:14px; }
+  .bar > i { display:block; height:100%; width:0%; background:linear-gradient(90deg,#2ea043,#3fb950); transition:width .18s ease; }
+  .state { margin-top:12px; font-size:14px; color:var(--dim); min-height:22px; }
+  .state.ok { color:var(--ok); }
+  .state.warn { color:var(--warn); }
+  .state.bad { color:var(--bad); }
+  .tip { margin-top:14px; padding:12px 14px; border-radius:12px; background:#1a222c; border:1px solid var(--line);
+         font-size:13.5px; color:var(--dim); }
+  .tip b { color:var(--txt); }
+  code { background:#0e141b; border:1px solid var(--line); border-radius:6px; padding:1px 6px; font-size:13px; }
+  .foot { margin-top:18px; color:#64748b; font-size:12px; text-align:center; }
+</style>
+</head>
+<body>
+  <h1>下载诊断报告</h1>
+  <div class="sub">异常 + 调试日志 · {{DEVICE}}</div>
+
+  <div class="card">
+    <div class="kv"><span>生成时间</span><b>{{TS}}</b></div>
+    <div class="kv"><span>异常记录</span><b>{{EXC}}</b></div>
+    <div class="kv"><span>调试日志</span><b>{{LOGS}}</b></div>
+    <div class="kv"><span>报告大小</span><b>{{SIZE}}</b></div>
+    <div class="kv"><span>应用版本</span><b>{{VERSION}}</b></div>
+  </div>
+
+  <button id="dl" onclick="startDownload()">下载报告</button>
+  <button id="cancel" class="ghost" style="display:none" onclick="cancelDownload()">取消下载</button>
+
+  <div class="bar"><i id="bar"></i></div>
+  <div id="state" class="state">点击上面的按钮开始下载</div>
+
+  <div class="tip">
+    <b>下载完成前请保持此页面开启。</b><br>
+    页面关闭或切到后台时间过长，下载会中断；中断后重新点「下载报告」即可，不会影响车机上的数据。
+  </div>
+
+  <div class="foot">ZEEload · 报告只通过本机局域网传输，不上传任何服务器</div>
+
+<script>
+const REPORT_URL = "{{DOWNLOAD_PATH}}";
+const TOTAL = {{SIZE_BYTES}};
+const bar = document.getElementById('bar');
+const stateEl = document.getElementById('state');
+const dlBtn = document.getElementById('dl');
+const cancelBtn = document.getElementById('cancel');
+let controller = null;
+let received = 0;
+let finished = false;
+
+function fmt(bytes) {
+  if (bytes >= 1048576) return (bytes / 1048576).toFixed(2) + ' MB';
+  if (bytes >= 1024) return (bytes / 1024).toFixed(0) + ' KB';
+  return bytes + ' B';
+}
+
+function setState(text, cls) {
+  stateEl.textContent = text;
+  stateEl.className = 'state' + (cls ? ' ' + cls : '');
+}
+
+function progress(ratio) {
+  const pct = Math.max(0, Math.min(100, Math.round(ratio * 100)));
+  bar.style.width = pct + '%';
+  return pct;
+}
+
+window.addEventListener('beforeunload', (e) => {
+  if (!finished && received > 0) {
+    e.preventDefault();
+    e.returnValue = '报告还没下载完，现在离开会中断下载。';
+    return e.returnValue;
+  }
+});
+
+async function startDownload() {
+  if (!window.fetch || !window.ReadableStream) { fallbackDownload(); return; }
+  dlBtn.disabled = true;
+  cancelBtn.style.display = 'block';
+  received = 0;
+  controller = new AbortController();
+  setState('正在下载… 0%');
+  const started = performance.now();
+  try {
+    const resp = await fetch(REPORT_URL, { signal: controller.signal, cache: 'no-store' });
+    if (!resp.ok) {
+      setState('车机拒绝了这个请求（' + resp.status + '）。请在车机上刷新页面后重试。', 'bad');
+      reset();
+      return;
+    }
+    const len = Number(resp.headers.get('content-length') || TOTAL || 0);
+    const reader = resp.body.getReader();
+    const chunks = [];
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      chunks.push(value);
+      received += value.length;
+      const ratio = len ? received / len : 0;
+      const pct = progress(ratio);
+      const speed = received / Math.max(0.4, (performance.now() - started) / 1000);
+      setState('正在下载… ' + pct + '%（' + fmt(received) + ' / ' + fmt(len) + '，' + fmt(speed) + '/s）');
+    }
+    const blob = new Blob(chunks, { type: 'application/zip' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = "{{FILE_NAME}}";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    finished = true;
+    progress(1);
+    setState('下载完成（' + fmt(received) + '）。可以关闭此页面了。', 'ok');
+    cancelBtn.style.display = 'none';
+    dlBtn.disabled = false;
+    dlBtn.textContent = '再下载一次';
+    report('done', received);
+  } catch (err) {
+    if (err && err.name === 'AbortError') {
+      setState('已取消。', 'warn');
+    } else {
+      setState('下载中断：' + (err && err.message ? err.message : err) + '。保持页面开启后重试。', 'bad');
+    }
+    reset();
+  }
+}
+
+function fallbackDownload() {
+  setState('当前浏览器不支持进度显示，已直接开始下载。下载完成前请保持此页面开启。', 'warn');
+  window.location.href = REPORT_URL;
+  finished = true;
+}
+
+function reset() {
+  controller = null;
+  dlBtn.disabled = false;
+  cancelBtn.style.display = 'none';
+}
+
+function cancelDownload() {
+  if (controller) controller.abort();
+  progress(0);
+}
+
+function report(stage, bytes) {
+  try {
+    fetch('{{PROGRESS_PATH}}?stage=' + encodeURIComponent(stage) + '&bytes=' + bytes,
+          { cache: 'no-store', keepalive: true }).catch(() => {});
+  } catch (_) {}
+}
+
+// 页面打开就通知车机「手机已连接」，车机端会显示已扫码
+report('open', 0);
+</script>
+</body>
+</html>

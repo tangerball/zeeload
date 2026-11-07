@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- ZEEload 图标前景：绿色 Z 字（三段几何拼合）+ 下方一道细横线（安装落点） -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 上横 -->
+    <path
+        android:fillColor="#3FB950"
+        android:pathData="M34,32 H74 V44 H34 Z" />
+    <!-- 斜笔 -->
+    <path
+        android:fillColor="#2EA043"
+        android:pathData="M66,44 H74 L42,64 H34 Z" />
+    <!-- 下横 -->
+    <path
+        android:fillColor="#3FB950"
+        android:pathData="M34,64 H74 V76 H34 Z" />
+    <!-- 安装落点 -->
+    <path
+        android:fillColor="#8FD98F"
+        android:pathData="M46,82 H62 V85 H46 Z" />
+</vector>

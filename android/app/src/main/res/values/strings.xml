@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- 应用名称：改这一行就同时改桌面名称与界面标题 -->
+    <string name="app_name">应用助手</string>
+    <string name="app_subtitle">车机应用助手</string>
+</resources>

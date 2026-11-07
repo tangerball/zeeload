@@ -13,8 +13,8 @@ android {
         applicationId = "com.zeeload.carappcenter"
         minSdk = 28
         targetSdk = 35
-        versionCode = 30
-        versionName = "1.24.0-hd"
+        versionCode = 31
+        versionName = "1.24.1"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 

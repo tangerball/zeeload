@@ -167,6 +167,15 @@ class InstallReceiver : BroadcastReceiver() {
             ?.takeIf { it.isNotBlank() }
             ?: if (success) "安装成功" else "安装失败（状态码 $status）"
         val old = services.db.apps().get(name)
+        val installerPkg = runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                context.packageManager.getInstallSourceInfo(name).installingPackageName.orEmpty()
+            } else {
+                @Suppress("DEPRECATION")
+                context.packageManager.getInstallerPackageName(name).orEmpty()
+            }
+        }.getOrDefault("")
+        val resultText = "$message · via=direct · installer=${installerPkg.ifBlank { context.packageName }}"
         try {
             if (success) {
                 val actual = services.packages.find(name)
@@ -183,18 +192,18 @@ class InstallReceiver : BroadcastReceiver() {
                         apkSha256 = sha,
                         installedAt = old?.installedAt ?: System.currentTimeMillis(),
                         updatedAt = System.currentTimeMillis(),
-                        lastResult = message
+                        lastResult = resultText
                     )
                 )
                 path.delete()
             } else if (old != null) {
-                services.db.apps().put(old.copy(lastResult = message))
+                services.db.apps().put(old.copy(lastResult = resultText))
             }
             services.db.apps().record(
                 InstallRecord(packageName = name, at = System.currentTimeMillis(),
-                    versionCode = version, result = message, apkSha256 = sha)
+                    versionCode = version, result = resultText, apkSha256 = sha)
             )
-            services.logs.log("install-result", message, name, url, version,
+            services.logs.log("install-result", resultText, name, url, version,
                 errorCode = status.toString(), level = if (success) "INFO" else "ERROR")
         } finally {
             services.cache.unpin(path)

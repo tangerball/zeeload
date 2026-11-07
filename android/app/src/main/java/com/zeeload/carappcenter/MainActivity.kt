@@ -162,6 +162,8 @@ private fun CarScreen(
         installed = withContext(Dispatchers.IO) { services.packages.installed() }
         refreshStorage()
     }
+    androidx.activity.compose.BackHandler(enabled = tab != 0) { tab = 0 }
+
     LaunchedEffect(tab) {
         while (tab == 3) {
             debugEnabled = services.settings.debugUntil > System.currentTimeMillis()

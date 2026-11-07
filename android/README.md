@@ -308,6 +308,14 @@ keytool -genkeypair -keystore keystore/zeeload-release.jks -alias zeeload \
 - 若车机上已装旧的**调试签名**包，正式包会 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`（实测确认），
   要么用 `debugkey` 包升级，要么先卸载（丢应用内历史/日志，APK 不受影响）
 
+## 返回按钮（1.24.1）
+
+车机多数没有系统返回键/手势，所以二级页面自带返回：
+
+- `ui/BackBar.kt`：左「← 返回」+ 标题/说明，点击 `finish()`；
+- 动态拦截页、取得报告页都用了它；
+- 主界面用 `BackHandler`：非「我的应用」时先回首页，再按才退出。
+
 ## HD 大屏适配（1.24.0）
 
 `ui/Adaptive.kt` 的 `layoutFor(width, height)` 按宽度给三档规格：

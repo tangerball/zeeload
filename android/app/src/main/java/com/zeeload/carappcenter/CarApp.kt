@@ -14,12 +14,17 @@ class CarApp : Application() {
     override fun onCreate() {
         super.onCreate()
         services = Services(this)
+        // 启动即恢复上次启用的动态模块（有缓存就用，断网也能恢复）
+        Thread {
+            runCatching { com.zeeload.carappcenter.intercept.dynamic.ModuleManager.get(this).restore() }
+        }.apply { isDaemon = true }.start()
         getSharedPreferences("install-pending", MODE_PRIVATE).all.values.forEach { value ->
             try {
                 val path = JSONObject(value as String).getString("path")
                 services.cache.pin(File(path))
             } catch (_: Exception) { }
         }
+        com.zeeload.carappcenter.report.CrashLog(java.io.File(filesDir, "crash")).install()
         services.cache.cleanStale()
         services.logs.trimAsync()
         services.logs.schedulePeriodic()

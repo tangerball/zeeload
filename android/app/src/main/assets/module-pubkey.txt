@@ -1,0 +1,4 @@
+# 动态模块签名公钥（Base64 X.509，ECDSA P-256）
+# 生成：tools/module-server/gen-keys.sh   ——它会打印一行 Base64，粘到下面（私有钥留在 tools/module-server/keys/，不入库）
+# 换公钥 = 换信任根：必须同时重新签所有已下发模块。
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE7K3s6RsAMosfbECHUtLZ38WFhxPg09absSNVzSs+V32kyANUYcOmnDM37/4tQvk4LZov5eFzJ8jbVyOh1d0ONQ==

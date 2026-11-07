@@ -123,6 +123,7 @@ class InterceptActivity : ComponentActivity() {
             com.zeeload.carappcenter.ui.CarTheme(scale) {
                 Surface(modifier = Modifier.fillMaxSize(), color = CarPalette.bg) {
                     InterceptScreen(
+                        onBack = { finish() },
                         repo = repo,
                         catalog = catalog,
                         presetApk = presetApk,
@@ -163,6 +164,7 @@ class InterceptActivity : ComponentActivity() {
 
 @Composable
 private fun InterceptScreen(
+    onBack: () -> Unit,
     repo: ArmRepository,
     catalog: MarketCatalog,
     presetApk: String,
@@ -280,11 +282,10 @@ private fun InterceptScreen(
                     armedNow = state.fresh(),
                 )
             }
-            Text("动态拦截（车机本机）", color = CarPalette.text, fontSize = 26.sp, fontWeight = FontWeight.Bold)
-            Text(
-                "只拦你勾选的应用市场；安装仍由商店完成，权限按官方渠道发放。",
-                color = CarPalette.dim, fontSize = 15.sp,
-            )
+            com.zeeload.carappcenter.ui.BackBar(
+                title = "动态拦截（车机本机）",
+                subtitle = "只拦你勾选的应用市场；安装仍由商店完成，权限按官方渠道发放。",
+            ) { onBack() }
 
             Section("① 选择应用市场（per-app VPN）") {
                 Column(Modifier.fillMaxWidth()) {
