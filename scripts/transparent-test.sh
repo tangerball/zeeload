@@ -9,10 +9,17 @@
 #
 # 不修改 /etc/pf.conf 或主规则集；临时挂接互联网共享父 anchor，退出时恢复。
 #
+# 前提（很容易踩）：macOS 的「互联网共享」必须真的在运行——
+#   判据是 sysctl -n net.inet.ip.forwarding = 1，且 sudo pfctl -s nat 里有 rdr-anchor。
+#   共享关掉时 bridge100 的 192.168.2.1 可能还在，但车机既没网、本脚本也没有 anchor 可挂。
+#   脚本在找不到 anchor 时会自动打印这份诊断（见 diag_sharing）。
+#
 # 用法：
 #   sudo bash scripts/transparent-test.sh [--all-443] [--reset-states] [--check-only]
+#   sudo bash scripts/transparent-test.sh --all-443 --intercept-all --live   # 动态拦截（控制台选包）
 #
-# 环境变量覆盖：SIDELOAD_IFACE SIDELOAD_CAR_IP SIDELOAD_CAR_MAC SIDELOAD_LISTEN_IP SIDELOAD_PORT SIDELOAD_VENV
+# 环境变量覆盖：SIDELOAD_IFACE SIDELOAD_CAR_IP SIDELOAD_CAR_MAC SIDELOAD_LISTEN_IP SIDELOAD_PORT
+#               SIDELOAD_VENV SIDELOAD_CONTROL_PORT SIDELOAD_LIVE
 
 set -uo pipefail
 umask 077
@@ -35,6 +42,8 @@ HOSTS=${SIDELOAD_HOSTS:-"snc-api-gw.zeekrlife.com,snc-download-cdn.zeekrlife.com
 MODE=targets
 RESET_STATES=0
 CHECK_ONLY=0
+LIVE=${SIDELOAD_LIVE:-0}
+CONTROL_PORT=${SIDELOAD_CONTROL_PORT:-18082}
 
 CORRUPT=-1
 FAKE_HASH=0
@@ -61,6 +70,11 @@ while [ $# -gt 0 ]; do
     --replace-apk)
       [ $# -ge 2 ] || { echo "--replace-apk 需要 APK 路径" >&2; exit 2; }
       REPLACE_APK=$2; shift 2 ;;
+    --live) LIVE=1; shift ;;
+    --control-port)
+      [ $# -ge 2 ] || { echo "--control-port 需要端口号" >&2; exit 2; }
+      case "$2" in ''|*[!0-9]*) echo "--control-port 参数必须是整数" >&2; exit 2 ;; esac
+      CONTROL_PORT=$2; shift 2 ;;
     --check-only) CHECK_ONLY=1; shift ;;
     --corrupt)
       [ $# -ge 2 ] || { echo "--corrupt 需要偏移字节数" >&2; exit 2; }
@@ -183,6 +197,36 @@ CLEANED=0
 PROXY_STARTED=0
 RULES_LOADED=0
 PARENT_HOOK_ADDED=0
+# 互联网共享没真正运行时：配置里 Enabled=1，但 ip.forwarding=0、pf 里也没有 rdr-anchor。
+diag_sharing() {
+  local fwd nat_en bootd verdict
+  fwd=$(sysctl -n net.inet.ip.forwarding 2>/dev/null || echo "?")
+  nat_en=$(defaults read /Library/Preferences/SystemConfiguration/com.apple.nat NAT.Enabled 2>/dev/null || echo "未配置")
+  bootd=$(pgrep -x bootpd >/dev/null 2>&1 && echo yes || echo no)
+  verdict="未知"
+  if [ "$fwd" = "1" ]; then
+    verdict="ip.forwarding=1（共享在跑）"
+  elif [ "$fwd" = "0" ]; then
+    verdict="ip.forwarding=0 → 互联网共享没真正运行（配置 Enabled=${nat_en:-?}，bootpd=${bootd}）"
+  fi
+  printf '    net.inet.ip.forwarding : %s\n' "$fwd"
+  printf '    NAT.Enabled(配置)      : %s\n' "${nat_en:-?}"
+  printf '    bootpd 进程            : %s\n' "$bootd"
+  printf '    判定                   : %s\n' "$verdict"
+  if [ "$fwd" != "1" ]; then
+    cat <<'TIP'
+    修法（任选其一，都需要管理员）：
+      a) 系统设置 → 通用 → 共享 → 互联网共享：关一次再打开，
+         「共享以下来源的连接」选 iPhone USB / Wi-Fi，「用以下端口共享给电脑」勾选 Thunderbolt Bridge；
+      b) 命令行重启共享服务：
+         sudo launchctl kickstart -k system/com.apple.InternetSharing
+      开好后自检：
+         sysctl -n net.inet.ip.forwarding          # 应为 1
+         sudo pfctl -s nat | grep rdr-anchor       # 应出现 com.apple.internet-sharing
+TIP
+  fi
+}
+
 PARENT_ANCHOR='com.apple.internet-sharing'
 PARENT_HOOK='rdr-anchor "carstore-capture" all'
 PARENT_MARKER=$BASE/mitm-config/carstore-parent-hook.active
@@ -342,6 +386,8 @@ fi
 
 if [ "$CHECK_ONLY" = 1 ] && [ "$(id -u)" != 0 ]; then
   warn "check-only 且未使用 root：跳过 pf 检查（pfctl 需要管理员权限）。"
+  say "== 互联网共享 / 转发状态（诊断）=="
+  diag_sharing
 else
   say "[..] 检查 pf 状态与主规则集"
   PF_INFO=$(pfctl -s info 2>&1) || die "无法读取 pf：${PF_INFO}（需要 root）"
@@ -364,7 +410,9 @@ else
   else
     say "当前 nat 规则如下："
     printf '%s\n' "$PF_NAT" | sed 's/^/    /'
-    die "pf 规则集没有可用的互联网共享 rdr-anchor，无法在不改主规则集的前提下挂接转发规则。"
+    say "== 互联网共享 / 转发状态 =="
+    diag_sharing
+    die "pf 规则集没有可用的互联网共享 rdr-anchor（通常因为互联网共享没真正在跑），无法在不改主规则集的前提下挂接转发规则。"
   fi
 
   if [ "$ANCHOR" = "$PARENT_ANCHOR/carstore-capture" ]; then
@@ -510,6 +558,13 @@ if [ "$FAKE_HASH" = 1 ]; then
   say "!! 目的：观察 /app/signature 是否给非官方哈希签名；下载会因哈希不符失败，属正常"
 fi
 
+if [ "$LIVE" = 1 ]; then
+  say ""
+  say "!! 动态拦截模式：代理启动时不绑定 APK"
+  say "!! 控制台：http://127.0.0.1:${CONTROL_PORT}/ （运行中选注入目标 + 换 APK，无需重启代理）"
+  say "!! 流程：车机打开商店 → 我的/检查更新 → 点开任意应用详情页 → 控制台出现该应用 → 选它并武装"
+fi
+
 if [ "$CORRUPT" -ge 0 ]; then
   say ""
   say "!! 调试模式：APK 下载数据中会翻转 1 个字节（长度不变、仍为流式转发）"
@@ -540,6 +595,7 @@ if [ "$INTERCEPT_ALL" = 0 ]; then
   MITM_ARGS+=(--allow-hosts "$HOST_RE")
 fi
 MITM_ARGS+=(--set "hosts=$HOSTS")
+MITM_ARGS+=(--set "control_addr=127.0.0.1:$CONTROL_PORT")
 
 if [ "$FAKE_HASH" = 1 ]; then
   MITM_ARGS+=(--set fake_hash=true)
@@ -580,6 +636,7 @@ if have lsof; then
   done
 fi
 say "[ok] mitmdump 已启动，监听 $LISTEN_IP:$PORT"
+say "[ok] 动态拦截控制台：http://127.0.0.1:${CONTROL_PORT}/"
 
 echo "start=$(date)" >> "$OUT/summary.txt"
 echo "iface=$IFACE car=$CAR_IP mac=$CAR_MAC listen=$LISTEN_IP:$PORT mode=$MODE" >> "$OUT/summary.txt"
@@ -592,6 +649,7 @@ echo "fake_sign=$FAKE_SIGN" >> "$OUT/summary.txt"
 echo "replace_apk=$REPLACE_APK" >> "$OUT/summary.txt"
 echo "inject_pkg=$INJECT_PKG" >> "$OUT/summary.txt"
 echo "intercept_all=$INTERCEPT_ALL" >> "$OUT/summary.txt"
+echo "live=$LIVE control=http://127.0.0.1:$CONTROL_PORT/" >> "$OUT/summary.txt"
 echo "domains=$DOMAINS" >> "$OUT/summary.txt"
 echo "hosts=$HOSTS" >> "$OUT/summary.txt"
 echo "mitmdump_args=${MITM_ARGS[*]}" >> "$OUT/summary.txt"

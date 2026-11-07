@@ -106,6 +106,198 @@ GET  https://cdn.example.com/app-market/<id>/<md5>.apk
 
 **安全闸门**：只有当商店「用目标 APK 的哈希取过签名」（说明元数据改写已被采纳）时才替换下载；否则按官方内容原样透传，避免无谓失败。
 
+### 4.45 动态拦截与「安装者身份」
+
+到 4.4 为止，链路是静态的：启动时定死一个注入目标与一个替换包。实际使用里更需要的是
+**运行期动态决定**——先观察商店认识哪些应用，再挑一个当「更新外壳」，并且随时换包。
+
+控制面（`addons/store_log.py` 的 `LiveArm` + `ControlServer`）把三件事搬到运行期：
+
+| 运行期状态 | 作用 |
+|---|---|
+| 注入目标包 `pkg` | 商店 appList / 详情页里哪一条被改写成「有新版本」；`ALL` = 任意条目 |
+| 替换包 `data/sha256/md5/size` | 下载响应体、元数据哈希、签名请求三者同源，保证商店自洽 |
+| TTL | 武装有效期，过期自动放行原样流量 |
+
+要点：**改动只发生在网络上**，安装动作、安装会话、安装完成广播仍由商店自己发起，因此
+`PackageManager` 记录的 `installerPackageName` 是商店包名。这解释了为什么「装得上但没权限」
+的应用，走商店链路后权限就跟着来了——系统按安装者身份决定是否按官方应用对待。
+
+权限若仍然没到位，只有两种可能：
+
+1. 系统在安装完成回调里按**元数据包名**发权限 → 权限落在作为外壳的那款应用上。
+   对策：注入目标改成目标 APK 自己的包名（该应用需已安装，走「更新已装应用」分支）。
+2. 系统按**服务端下发的白名单**（包名+签名+版本）发权限，与安装者无关。
+   这种情况网络层改写拿不到，属于服务端策略。
+
+验证脚本：`bash scripts/check-installer.sh <包名>`，看 `installerPackageName` 与
+`runtime permissions` / `cmd appops get` 的落地情况。
+
+### 4.46 只升级不可重装：为什么元数据版本必须等于 APK 内部版本
+
+「同一款应用第二次以后只能升级」是很常见的车机策略：包名 + 签名一致、`versionCode` 递增。
+在这条策略下，网络层改写要额外守一条一致性：
+
+```text
+商店判断「有没有新版」 → 看元数据 apkVersion
+安装器判断「能不能装」 → 看下载到的 APK 里的 android:versionCode
+两者不一致 → 商店弹出更新，安装器直接报「版本未提高」
+```
+
+所以升级模式（`mode=update`）不能再用哈希派生的假版本号，必须把元数据写成 APK 自己的
+`versionCode / versionName`；同时武装阶段就要拒绝「版本没有提高」和「签名与已安装不一致」的组合，
+否则到安装那一刻才失败，白白跑一遍 25 MB 下载。
+
+`addons/apkmeta.py` 负责读这三件事（纯 Python，无 aapt 依赖）：
+
+| 字段 | 来源 |
+|---|---|
+| `package` / `versionCode` / `versionName` | `AndroidManifest.xml` 二进制 AXML 解析（字符串池 + RES_XML 元素） |
+| `signer_sha256` | APK Signing Block（v2/v3）里首个 signer 的证书 DER，sha256；v1 走 `META-INF/*.RSA` + openssl |
+
+与官方工具对齐：`apkanalyzer manifest application-id/version-code` 与
+`apksigner verify --print-certs` 的 SHA-256 摘要，和本实现的输出一致。
+
+### 4.47 多应用市场：按「谁在发应用数据」识别目标
+
+不同车机（甚至同一台车的不同版本）会挂不同商店：厂商市场、应用中心、第三方市场，域名与路径各异。
+把域名写死会在协议更换时直接失效，因此识别方式是**内容特征**而不是域名：
+响应是小 JSON 且含 `apkPackageName` → 判定为应用市场接口 → 该域名自动纳入拦截范围，
+可在控制台单个开关；停止开关后该域名流量完全不改写。
+
+注入匹配同样不依赖具体路径（遍历 JSON 里的应用条目），下载替换在「注入后、TTL 内、首个非 JSON 响应」
+时兜底，用于商店把下载地址放在未知字段名的情况下。
+
+### 4.49 排查：脚本启动即报「没有可用的互联网共享 rdr-anchor」
+
+**现象**：`transparent-test.sh` 在环境预检阶段退出 1，输出 `pf 规则集没有可用的互联网共享 rdr-anchor`。
+
+**原因**：脚本刻意不改 `/etc/pf.conf` 和主规则集，只把规则挂到 macOS 互联网共享创建的父 anchor 里
+（`rdr-anchor "com.apple.internet-sharing"`）。互联网共享**没有真正运行时**，主 nat 规则集里就没有这一行，
+脚本无处挂接。注意 `bridge100` 上的 `192.168.2.1` 可能还在（接口残留），但：
+
+| 判据 | 共享在跑 | 共享没跑 |
+|---|---|---|
+| `sysctl -n net.inet.ip.forwarding` | `1` | `0` |
+| `sudo pfctl -s nat \| grep rdr-anchor` | 有 `com.apple.internet-sharing` | 没有 |
+| 车机能否上网 | 能 | 不能（没有 NAT） |
+
+**修法**：
+
+```bash
+# a) GUI：系统设置 → 通用 → 共享 → 互联网共享，关一次再打开
+#    「共享以下来源的连接」选 iPhone USB / Wi-Fi；「用以下端口共享给电脑」勾选 Thunderbolt Bridge
+# b) CLI：
+sudo launchctl kickstart -k system/com.apple.InternetSharing
+
+# 自检
+sysctl -n net.inet.ip.forwarding        # 期望 1
+sudo pfctl -s nat | grep rdr-anchor     # 期望出现 com.apple.internet-sharing
+```
+
+脚本现在会在失败分支自动打印这三项判据与修法（`diag_sharing`），`--check-only` 在非 root 下也会打印。
+
+## 4.48 「伪装成应用市场」可行性（实测，Android 15 / API 35）
+
+结论：**普通应用无法把安装归属写成别的包名**，因此"伪装成商店去装"这条路在应用层是堵死的；
+能拿到商店身份的只有"让商店自己发安装"这一条。
+
+#### 4.48.1 机制
+
+`installerPackageName` 不是应用可自由填写的字符串，而是 `PackageInstallerService` 在
+`createSession` 时按**调用者 uid** 归属的：
+
+```text
+PackageInstaller.SessionParams.setInstallerPackageName("其他包名")   → 只是"申请"，不校验
+PackageInstaller.createSession(params)                              → 系统校验，失败即 SecurityException
+```
+
+放行条件只有两种：目标 installer 包**属于调用者 uid**，或调用者持有 `INSTALL_PACKAGES`
+（`signature|privileged`，普通应用拿不到；`device owner` 也不带这个权限）。
+参考 AOSP `PackageInstaller.SessionParams#setInstallerPackageName` 的语义：
+"By default this is the app that created the PackageInstaller object."
+
+#### 4.48.2 实测记录
+
+环境：Android 15 模拟器（API 35），被测应用 uid `10208`，用一次性探针页（见 4.48.5）执行。
+
+| 目标 installer | `setInstallerPackageName` | `createSession` | 结果 |
+|---|---|---|---|
+| `com.android.vending`（Play 商店） | 未抛异常 | `SecurityException: Package com.android.vending does not belong to 10208` | 拒绝 |
+| `com.google.android.gms`（系统 GMS） | 未抛异常 | `SecurityException: Package com.google.android.gms does not belong to 10208` | 拒绝 |
+| `com.zeeload.carappcenter`（自己） | 未抛异常 | 成功，`session installerPackageName=com.zeeload.carappcenter` | 通过 |
+
+对照组（第三行）说明失败原因不是"API 不可用"，而是**归属校验**：只有自己可以。
+
+#### 4.48.3 五条"伪装"路线为什么都不通
+
+| 路线 | 卡点 |
+|---|---|
+| 改 `installerPackageName` | 归属绑定调用者 uid；例外要 `INSTALL_PACKAGES`（实测见上表） |
+| 把 APK 包名改成商店包名 | 商店是系统签名 / priv-app，签名不同 → `INSTALL_FAILED_UPDATE_INCOMPATIBLE` |
+| 伪造商店签名 | 无私钥 |
+| 与商店共用 `sharedUserId` | 需要同签名 |
+| 伪造商店的 UI / 协议让用户"以为"是商店 | 系统只认包名 + 签名 + uid，与观感无关 |
+
+#### 4.48.4 仍然可行的两条
+
+1. **让商店自己发安装**（就是本项目的动态拦截链路）：商店 → `PackageInstaller` →
+   归属天然是商店包名 → 系统按官方渠道发权限。确定性最高。
+2. **有特权通道时改归属记录**：`adb shell pm install -i <商店包名> app.apk`（shell 持
+   `INSTALL_PACKAGES`）。注意这只改"归属记录"，**权限是否下发取决于厂商实现**：
+   - 按 installer 名在白名单里发 → 能吃到；
+   - 商店安装完成回调里调自家私有 `grant` 接口 → 吃不到（必须让商店自己走流程）；
+   - 服务端按包名 + 签名下发白名单 → 与安装者无关，怎么改都没用。
+
+#### 4.48.5 复现探针（临时用，验证完记得删）
+
+```kotlin
+// app/src/main/java/com/zeeload/carappcenter/ProbeActivity.kt（无 UI）
+class ProbeActivity : Activity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val target = intent?.getStringExtra("target") ?: "com.android.vending"
+        val log = StringBuilder()
+        try {
+            val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+            params.setAppPackageName("com.example.probe.victim")
+            params.setSize(4096)
+            params.setInstallerPackageName(target)
+            log.appendLine("setInstallerPackageName($target): OK")
+            val pi = packageManager.packageInstaller
+            val id = pi.createSession(params)
+            log.appendLine("createSession: OK id=$id")
+            log.appendLine("session installerPackageName=${pi.getSessionInfo(id)?.installerPackageName}")
+            pi.abandonSession(id)
+        } catch (t: Throwable) {
+            log.appendLine("createSession 失败：${t.javaClass.name}: ${t.message}")
+        }
+        File(filesDir, "probe.txt").writeText(log.toString())
+        finish()
+    }
+}
+```
+
+```bash
+# 清单里临时加：<activity android:name=".ProbeActivity" android:exported="true" />
+adb install -r app-debug.apk
+adb shell am start -n com.zeeload.carappcenter/.ProbeActivity --es target com.android.vending
+adb shell run-as com.zeeload.carappcenter cat files/probe.txt
+```
+
+#### 4.48.6 落地判据
+
+装完立刻看身份，别靠猜：
+
+```bash
+bash scripts/check-installer.sh <包名>          # installerPackageName + 运行期权限
+adb shell dumpsys package <包名> | grep -E "installerPackageName|pkgFlags|privateFlags"
+adb shell cmd appops get <包名>
+```
+
+- `installerPackageName = 商店包名` → 官方渠道口径，权限可能跟着走；
+- `installerPackageName = com.zeeload.carappcenter`（本应用）→ 第三方口径，不要指望商店特权。
+
 ### 4.5 两个漏洞的组合（核心结论）
 
 #### 漏洞 A：CA 证书链不可信（传输层）
@@ -167,6 +359,15 @@ A：解密 + 改写 TLS
 1. 打开应用商店 → 我的 / 检查更新（或直接点开某个应用的详情页）；
 2. 出现「有更新」提示后，点**任意一个**应用的更新；
 3. 等进度走完（实际下载的是你的 APK），安装完成后按终端提示 Ctrl-C。
+
+### 6.25 动态拦截（控制台）
+
+```bash
+sudo bash scripts/sideload.sh --live          # 或双击 动态拦截.command
+```
+
+代理起来后打开 `http://127.0.0.1:18082/`：`/apps` 实时列出商店已知应用，选定外壳包 + APK 路径
+后 `POST /arm` 立即生效；`/disarm` 解除；`/reload` 在 APK 换文件后热重载。整个过程不重启代理。
 
 ### 6.3 命令行方式
 
