@@ -308,6 +308,22 @@ keytool -genkeypair -keystore keystore/zeeload-release.jks -alias zeeload \
 - 若车机上已装旧的**调试签名**包，正式包会 `INSTALL_FAILED_UPDATE_INCOMPATIBLE`（实测确认），
   要么用 `debugkey` 包升级，要么先卸载（丢应用内历史/日志，APK 不受影响）
 
+## HD 大屏适配（1.24.0）
+
+`ui/Adaptive.kt` 的 `layoutFor(width, height)` 按宽度给三档规格：
+
+| 档位 | 触发宽度 | 侧栏 | 页边距 | 卡片间距 | 字号系数 |
+|---|---|---|---|---|---|
+| Compact | < 980dp | 240dp | 14dp | 12dp | 1.00 |
+| Medium | 980–1500dp | 296dp | 22dp | 16dp | 1.00 |
+| Expanded | ≥ 1500dp | 380dp | 34dp | 24dp | 1.18 |
+
+规则：
+- 内容限宽 `contentMaxWidth`（900 / 1400 / 1680dp），超宽屏左右补 inset 居中，卡片不会被拉成横带；
+- 字号系数与「设置 → 显示」的用户档位相乘（用户调多大，HD 再加成）；
+- 动态拦截页左栏在 Expanded 时 780dp，避免 ④ 动态模块挤在小栏里；
+- 1280×720（853dp 画布）落 Compact，与旧版布局一致（已回归截图核对）。
+
 ## 应用名称（1.23.3）
 
 名称集中在 `app/src/main/res/values/strings.xml`：

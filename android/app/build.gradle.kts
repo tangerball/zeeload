@@ -13,23 +13,42 @@ android {
         applicationId = "com.zeeload.carappcenter"
         minSdk = 28
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 30
+        versionName = "1.24.0-hd"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+    }
+
+    // 签名参数：优先 keystore.properties（本机文件，不入库），其次 -P 参数
+    val keystoreProps = mutableMapOf<String, String>()
+    rootProject.file("keystore.properties").takeIf { it.exists() }?.forEachLine { line ->
+        val trimmed = line.trim()
+        if (trimmed.isNotEmpty() && !trimmed.startsWith("#") && trimmed.contains("=")) {
+            keystoreProps[trimmed.substringBefore("=").trim()] = trimmed.substringAfter("=").trim()
+        }
+    }
+    fun signingValue(key: String, gradleProp: String): String? =
+        keystoreProps[key] ?: providers.gradleProperty(gradleProp).orNull
+
+    signingConfigs {
+        val store = signingValue("storeFile", "zeeloadKeystore")
+        if (store != null) {
+            create("release") {
+                storeFile = rootProject.file(store)
+                storePassword = signingValue("storePassword", "zeeloadStorePassword")
+                keyAlias = signingValue("keyAlias", "zeeloadKeyAlias")
+                keyPassword = signingValue("keyPassword", "zeeloadKeyPassword")
+                enableV1Signing = true
+                enableV2Signing = true
+                enableV3Signing = true
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            val store = providers.gradleProperty("zeeloadKeystore").orNull
-            if (store != null) {
-                signingConfig = signingConfigs.create("localRelease") {
-                    storeFile = file(store)
-                    storePassword = providers.gradleProperty("zeeloadStorePassword").orNull
-                    keyAlias = providers.gradleProperty("zeeloadKeyAlias").orNull
-                    keyPassword = providers.gradleProperty("zeeloadKeyPassword").orNull
-                }
-            }
+            isShrinkResources = false
+            signingConfig = signingConfigs.findByName("release")
         }
     }
     compileOptions {
@@ -54,5 +73,6 @@ dependencies {
     implementation("androidx.room:room-ktx:2.8.4")
     kapt("androidx.room:room-compiler:2.8.4")
     implementation("androidx.work:work-runtime-ktx:2.11.0")
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     testImplementation("junit:junit:4.13.2")
 }
